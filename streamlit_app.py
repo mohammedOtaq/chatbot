@@ -1,56 +1,85 @@
 import streamlit as st
-from openai import OpenAI
+import openai
+import os
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
-)
-
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
+# تحديد مفتاح الـ API: نستخدم st.secrets إن وجد، وإلا نطلب من المستخدم إدخاله.
+if "OPENAI_API_KEY" in st.secrets:
+    openai_api_key = st.secrets["OPENAI_API_KEY"]
 else:
+    openai_api_key = st.text_input("OpenAI API Key", type="password")
+    if not openai_api_key:
+        st.info("يرجى إدخال مفتاح OpenAI API للمتابعة.", icon="🗝️")
+        st.stop()
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+openai.api_key = openai_api_key
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
+# اختيار الوضع بين Chatbot و"القاضي الذكي" عبر شريط جانبي
+mode = st.sidebar.radio("اختر الوضع", ["Chatbot", "القاضي الذكي"])
+
+if mode == "Chatbot":
+    st.title("💬 Chatbot")
+    st.write(
+        "هذا التطبيق يستخدم نموذج GPT-3.5 لإنشاء الردود. يمكنك التفاعل مع الدردشة بشكل مباشر."
+    )
+
+    # حفظ الرسائل في الجلسة لضمان استمرارها عبر التحديثات
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Display the existing chat messages via `st.chat_message`.
+    # عرض الرسائل السابقة باستخدام st.chat_message
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
-
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    # حقل إدخال الدردشة
+    user_input = st.chat_input("ما الجديد؟")
+    if user_input:
+        # إضافة رسالة المستخدم للرسائل الموجودة
+        st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
-            st.markdown(prompt)
+            st.markdown(user_input)
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
+        # استدعاء OpenAI API مع البث (stream) لعرض الرد تدريجيًا
+        response_placeholder = st.empty()
+        full_response = ""
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=st.session_state.messages,
+                stream=True,
+            )
+            with st.chat_message("assistant"):
+                for chunk in response:
+                    chunk_message = chunk["choices"][0]["delta"].get("content", "")
+                    full_response += chunk_message
+                    response_placeholder.markdown(full_response)
+            st.session_state.messages.append({"role": "assistant", "content": full_response})
+        except Exception as e:
+            st.error(f"❌ حدث خطأ: {e}")
+
+elif mode == "القاضي الذكي":
+    st.title("القاضي الذكي")
+    st.write("أدخل الاستفسار وتفاصيل القضية لتحليلها.")
+    
+    # حقول إدخال لاستفسار القضية وتفاصيلها
+    inquiry = st.text_input("الاستفسار:")
+    case_text = st.text_area("تفاصيل القضية:")
+
+    def analyze_case(inquiry, case_text):
+        response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
+                {"role": "system", "content": "أنت قاضٍ ذكي تقوم بتحليل القضايا."},
+                {"role": "user", "content": f"الاستفسار: {inquiry}\nتفاصيل القضية: {case_text}"}
+            ]
         )
+        return response.choices[0].message["content"]
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+    # عند الضغط على زر "تحليل القضية" يتم استدعاء الدالة وعرض النتيجة
+    if st.button("تحليل القضية"):
+        st.write("جارٍ تحليل القضية...")
+        try:
+            result = analyze_case(inquiry, case_text)
+            st.success(result)
+        except Exception as e:
+            st.error(f"❌ حدث خطأ: {e}")
